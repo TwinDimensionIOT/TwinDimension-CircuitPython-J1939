@@ -1,21 +1,16 @@
-import logging
-import can
-from can import Listener
+import adafruit_logging as logging
 import time
-import sys
-import threading
-import queue
 from .controller_application import ControllerApplication
 from .parameter_group_number import ParameterGroupNumber
 from .j1939_21 import J1939_21
 from .j1939_22 import J1939_22
 from .message_id import FrameFormat
+from .can import CanBus
 
 logger = logging.getLogger(__name__)
 
 class ElectronicControlUnit:
     """ElectronicControlUnit (ECU) holding one or more ControllerApplications (CAs)."""
-
 
     def __init__(self, data_link_layer='j1939-21', max_cmdt_packets=1, minimum_tp_rts_cts_dt_interval=None, minimum_tp_bam_dt_interval=None, send_message=None):
         """
@@ -25,49 +20,30 @@ class ElectronicControlUnit:
         if send_message:
             self.send_message = send_message
 
-        #: A python-can :class:`can.BusABC` instance
         self._bus = None
-        # Locking object for send
-        self._send_lock = threading.Lock()
 
         if max_cmdt_packets > 0xFF:
             raise ValueError("max number of segments that can be sent is 0xFF")
 
         # set data link layer
         if data_link_layer == 'j1939-21':
-            self.j1939_dll = J1939_21(self.send_message, self._job_thread_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
+            self.j1939_dll = J1939_21(self.send_message, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
         elif data_link_layer == 'j1939-22':
-            self.j1939_dll = J1939_22(self.send_message, self._job_thread_wakeup, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
+            self.j1939_dll = J1939_22(self.send_message, self._notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, self._is_message_acceptable)
         else:
             raise ValueError("either 'j1939-21' or 'j1939-22' must be provided for data link layer")
 
-        #: Includes at least MessageListener.
-        self._listeners = [MessageListener(self)]
-        self._notifier = None
         self._subscribers = []
 
-        # List of timer events the job thread should care of
+        # List of timer events the loop should care of
         self._timer_events = []
-
-        self._job_thread_end = threading.Event()
-        logger.info("Starting ECU async thread")
-        self._job_thread_wakeup_queue = queue.Queue()
-        self._job_thread = threading.Thread(target=self._async_job_thread, name='j1939.ecu job_thread')
-        # A thread can be flagged as a "daemon thread". The significance of
-        # this flag is that the entire Python program exits when only daemon
-        # threads are left.
-        self._job_thread.daemon = True
-        self._job_thread.start()
-
 
     def stop(self):
         """Stops the ECU background handling
 
         This Function explicitely stops the background handling of the ECU.
         """
-        self._job_thread_end.set()
-        self._job_thread_wakeup()
-        self._job_thread.join()
+        pass
 
     def add_timer(self, delta_time, callback, cookie=None):
         """Adds a callback to the list of timer events
@@ -86,7 +62,6 @@ class ElectronicControlUnit:
             }
 
         self._timer_events.append( d )
-        self._job_thread_wakeup()
 
     def remove_timer(self, callback):
         """Removes ALL entries from the timer event list for the given callback
@@ -97,9 +72,8 @@ class ElectronicControlUnit:
         for event in self._timer_events:
             if event['callback'] == callback:
                 self._timer_events.remove( event )
-        self._job_thread_wakeup()
 
-    def connect(self, *args, **kwargs):
+    def connect(self, **kwargs):
         """Connect to CAN bus using python-can.
 
         Arguments are passed directly to :class:`can.BusABC`. Typically these
@@ -117,9 +91,10 @@ class ElectronicControlUnit:
         :raises can.CanError:
             When connection fails.
         """
-        self._bus = can.interface.Bus(*args, **kwargs)
-        logger.info("Connected to '%s'", self._bus.channel_info)
-        self._notifier = can.Notifier(self._bus, self._listeners, 1)
+        logger.info("connect")
+        self._bus = CanBus(**kwargs, on_receive = self.notify)
+        #logger.info("Connected to '%s'", self._bus.channel_info)
+        #self._notifier = can.Notifier(self._bus, self._listeners, 1)
         return self._bus
 
     def disconnect(self):
@@ -127,7 +102,6 @@ class ElectronicControlUnit:
 
         Must be overridden in a subclass if a custom interface is used.
         """
-        self._notifier.stop()
         self._bus.shutdown()
         self._bus = None
 
@@ -183,6 +157,7 @@ class ElectronicControlUnit:
 
         self.j1939_dll.add_ca(ca)
         ca.associate_ecu(self)
+        
         return ca
 
     def remove_ca(self, device_address):
@@ -215,7 +190,7 @@ class ElectronicControlUnit:
 
         This method may be overridden in a subclass if you need to integrate
         this library with a custom backend.
-        It is safe to call this from multiple threads.
+        It is safe to call this from multiple threads. (?)
 
         :param int can_id:
             CAN-ID of the message (always 29-bit)
@@ -227,17 +202,10 @@ class ElectronicControlUnit:
         :raises can.CanError:
             When the message fails to be transmitted
         """
-
+        logger.debug("send_message | can_id {0} | extended_id {1}".format(can_id, extended_id))
         if not self._bus:
             raise RuntimeError("Not connected to CAN bus")
-        msg = can.Message(is_extended_id=extended_id,
-                          arbitration_id=can_id,
-                          data=data,
-                          is_fd=fd_format,
-                          bitrate_switch=fd_format
-                          )
-        with self._send_lock:
-            self._bus.send(msg)
+        self._bus.send(can_id, bytes(data), extended_id)
         # TODO: check error receivement
 
     def notify(self, can_id, data, timestamp):
@@ -256,69 +224,39 @@ class ElectronicControlUnit:
             seconds.
             Where possible this will be timestamped in hardware.
         """
+        # ToDo
+        #if msg.is_error_frame or msg.is_remote_frame or (msg.is_extended_id == False):
+        #    return
         self.j1939_dll.notify(can_id, data, timestamp)
 
-    def _async_job_thread(self):
-        """Asynchronous thread for handling various jobs
+    def loop(self, now):
+        
+        self._bus.loop()
 
-        This Thread handles various tasks:
-        - Event trigger for associated CAs
-        - Timeout monitoring of communication objects
+        next_wakeup = self.j1939_dll.loop(now)
 
-        To construct a blocking wait with timeout the task waits on a
-        queue-object. When other tasks are adding timer-events they can
-        wakeup the timeout handler to recalculate the new sleep-time
-        to awake at the new events.
-        """
-        system = sys.platform
-        if system.startswith("win32") or system.startswith("cygwin"):
-            import pythoncom
-            pythoncom.CoInitialize()
-
-        while not self._job_thread_end.is_set():
-
-            now = time.time()
-
-            next_wakeup = self.j1939_dll.async_job_thread(now)
-
-            # check timer events
-            for event in self._timer_events:
-                if event['deadline'] > now:
+        # check timer events
+        for event in self._timer_events:
+            if event['deadline'] > now:
+                if next_wakeup > event['deadline']:
+                    next_wakeup = event['deadline']
+            else:
+                # deadline reached
+                logger.debug("Deadline for event reached")
+                if event['callback']( event['cookie'] ) == True:
+                    # "true" means the callback wants to be called again
+                    while event['deadline'] < now:
+                        # just to take care of overruns
+                        event['deadline'] += event['delta_time']
+                    # recalc next wakeup
                     if next_wakeup > event['deadline']:
                         next_wakeup = event['deadline']
                 else:
-                    # deadline reached
-                    logger.debug("Deadline for event reached")
-                    if event['callback']( event['cookie'] ) == True:
-                        # "true" means the callback wants to be called again
-                        while event['deadline'] < now:
-                            # just to take care of overruns
-                            event['deadline'] += event['delta_time']
-                        # recalc next wakeup
-                        if next_wakeup > event['deadline']:
-                            next_wakeup = event['deadline']
-                    else:
-                        # remove from list
-                        self._timer_events.remove( event )
+                    # remove from list
+                    self._timer_events.remove( event )
 
-            time_to_sleep = next_wakeup - time.time()
-            if time_to_sleep > 0:
-                try:
-                    self._job_thread_wakeup_queue.get(True, time_to_sleep)
-                except queue.Empty:
-                    # do nothing
-                    pass
-
-        if system.startswith("win32") or system.startswith("cygwin"):
-            pythoncom.CoUnitialize()
-
-    def _job_thread_wakeup(self):
-        """Wakeup the async job thread
-
-        By calling this function we wakeup the asyncronous job thread to
-        force a recalculation of his next wakeup event.
-        """
-        self._job_thread_wakeup_queue.put(1)
+        time_to_sleep = next_wakeup - time.time()
+        return time_to_sleep
 
     def _notify_subscribers(self, priority, pgn, sa, dest, timestamp, data):
         """Feed incoming message to subscribers.
@@ -348,23 +286,3 @@ class ElectronicControlUnit:
             if dic['dev_adr'] == dest:
                 return True
         return False
-
-class MessageListener(Listener):
-    """Listens for messages on CAN bus and feeds them to an ECU instance.
-
-    :param j1939.ElectronicControlUnit ecu:
-        The ECU to notify on new messages.
-    """
-
-    def __init__(self, ecu : ElectronicControlUnit):
-        self.ecu = ecu
-
-    def on_message_received(self, msg : can.Message):
-        if msg.is_error_frame or msg.is_remote_frame or (msg.is_extended_id == False):
-            return
-
-        try:
-            self.ecu.notify(msg.arbitration_id, msg.data, msg.timestamp)
-        except Exception as e:
-            # Exceptions in any callbaks should not affect CAN processing
-            logger.error(str(e))

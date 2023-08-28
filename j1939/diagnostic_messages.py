@@ -1,5 +1,5 @@
 import j1939
-import logging
+import adafruit_logging as logging
 
 logger = logging.getLogger(__name__)
 

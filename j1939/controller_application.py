@@ -1,4 +1,4 @@
-import logging
+import adafruit_logging as logging
 import j1939
 from .message_id import FrameFormat
 
@@ -66,7 +66,6 @@ class ControllerApplication:
         self._ecu = ecu
 
     def remove_ecu(self):
-
         self._ecu = None
 
     def subscribe(self, callback):
@@ -105,6 +104,7 @@ class ControllerApplication:
         """Remove the given callback from the request notification stream.
         :param callback: Function to call when an acknowledge is received.
         """
+        pass
 
     def add_timer(self, delta_time, callback, cookie=None):
         """Adds a callback to the list of timer events

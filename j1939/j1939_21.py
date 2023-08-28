@@ -1,6 +1,6 @@
 from .parameter_group_number import ParameterGroupNumber
 from .message_id import MessageId
-import logging
+import adafruit_logging as logging
 import time
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ class J1939_21:
         SENDING_BM              = 2 # sending broadcast packages
         TRANSMISSION_FINISHED   = 3 # finished, remove buffer
 
-    def __init__(self, send_message, job_thread_wakeup, notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, ecu_is_message_acceptable):
+    def __init__(self, send_message, notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, ecu_is_message_acceptable):
         # Receive buffers
         self._rcv_buffer = {}
         # Send buffers
@@ -57,7 +57,6 @@ class J1939_21:
         # number of packets that can be sent/received with CMDT (Connection Mode Data Transfer)
         self._max_cmdt_packets = max_cmdt_packets
 
-        self.__job_thread_wakeup = job_thread_wakeup
         self.__send_message = send_message
         self.__notify_subscribers = notify_subscribers
         self.__ecu_is_message_acceptable = ecu_is_message_acceptable
@@ -147,12 +146,10 @@ class J1939_21:
                     }
                 self.__send_tp_rts(src_address, pdu_specific, priority, pgn.value, message_size, num_packets, min(self._max_cmdt_packets, num_packets))
 
-            self.__job_thread_wakeup()
-
         return True
 
 
-    def async_job_thread(self, now):
+    def loop(self, now):
 
         next_wakeup = now + 5.0 # wakeup in 5 seconds
 
@@ -306,7 +303,6 @@ class J1939_21:
                 }
 
             self.__send_tp_cts(dest_address, src_address, self._rcv_buffer[buffer_hash]['num_packages_max_rec'], 1, pgn)
-            self.__job_thread_wakeup()
         elif control_byte == self.ConnectionMode.CTS:
             num_packages = data[1]
             next_package_number = data[2] - 1
@@ -318,7 +314,6 @@ class J1939_21:
                 # SAE J1939/21
                 # receiver requests a pause
                 self._snd_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.Th
-                self.__job_thread_wakeup()
                 return
 
             num_packages_all = self._snd_buffer[buffer_hash]["num_packages"]
@@ -333,7 +328,6 @@ class J1939_21:
 
             self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.SENDING_IN_CTS
             self._snd_buffer[buffer_hash]['deadline'] = time.time()
-            self.__job_thread_wakeup()
 
 
         elif control_byte == self.ConnectionMode.EOM_ACK:
@@ -344,7 +338,6 @@ class J1939_21:
             # TODO: should we inform the application about the successful transmission?
             self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.TRANSMISSION_FINISHED
             self._snd_buffer[buffer_hash]['deadline'] = time.time()
-            self.__job_thread_wakeup()
         elif control_byte == self.ConnectionMode.BAM:
             message_size = data[1] | (data[2] << 8)
             num_packages = data[3]
@@ -352,7 +345,6 @@ class J1939_21:
             if buffer_hash in self._rcv_buffer:
                 # TODO: should we deliver the partly received message to our CAs?
                 del self._rcv_buffer[buffer_hash]
-                self.__job_thread_wakeup()
 
             # init new buffer for this connection
             self._rcv_buffer[buffer_hash] = {
@@ -366,7 +358,6 @@ class J1939_21:
                     'src_address' : src_address,
                     'dest_address' : dest_address,
                 }
-            self.__job_thread_wakeup()
         elif control_byte == self.ConnectionMode.ABORT:
             # if abort received before transmission established -> cancel transmission
             buffer_hash = self._buffer_hash(dest_address, src_address)
@@ -401,7 +392,6 @@ class J1939_21:
                 self.__send_tp_eom_ack(dest_address, src_address, self._rcv_buffer[buffer_hash]['message_size'], self._rcv_buffer[buffer_hash]['num_packages'], self._rcv_buffer[buffer_hash]['pgn'])
             self.__notify_subscribers(mid.priority, self._rcv_buffer[buffer_hash]['pgn'], src_address, dest_address, timestamp, self._rcv_buffer[buffer_hash]['data'])
             del self._rcv_buffer[buffer_hash]
-            self.__job_thread_wakeup()
             return
 
         # clear to send
@@ -417,11 +407,9 @@ class J1939_21:
                                                                self._rcv_buffer[buffer_hash]['num_packages'])
 
             self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T2
-            self.__job_thread_wakeup()
             return
 
         self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T1
-        self.__job_thread_wakeup()
 
     def __send_tp_dt(self, src_address, dest_address, data):
         pgn = ParameterGroupNumber(0, 235, dest_address)

@@ -1,8 +1,8 @@
 from .parameter_group_number import ParameterGroupNumber
 from .message_id import MessageId, FrameFormat
-import logging
+import adafruit_logging as logging
 import time
-import numpy as np
+import ulab.numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ class J1939_22:
         AccessDenied = 2
         CannotRespond = 3
 
-    def __init__(self, send_message, job_thread_wakeup, notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, ecu_is_message_acceptable):
+    def __init__(self, send_message, notify_subscribers, max_cmdt_packets, minimum_tp_rts_cts_dt_interval, minimum_tp_bam_dt_interval, ecu_is_message_acceptable):
         # Receive buffers
         self._rcv_buffer = {}
         # Send buffers
@@ -99,7 +99,6 @@ class J1939_22:
         # number of packets that can be sent/received with CMDT (Connection Mode Data Transfer)
         self._max_cmdt_packets = max_cmdt_packets
 
-        self.__job_thread_wakeup = job_thread_wakeup
         self.__send_message = send_message
         self.__notify_subscribers = notify_subscribers
         self.__ecu_is_message_acceptable = ecu_is_message_acceptable
@@ -238,7 +237,6 @@ class J1939_22:
                     else:
                         # trigger sending
                         self._multi_pg_snd_buffer[hash]['deadline'] = time.time()
-                        self.__job_thread_wakeup()
                         # get next buffer
                         session += 1
         else:
@@ -315,8 +313,6 @@ class J1939_22:
                     }
                 self.__send_tp_rts(priority, src_address, pdu_specific, session_num, pgn.value, message_size, num_segments, min(self._max_cmdt_packets, num_segments))
 
-            self.__job_thread_wakeup()
-
         return True
 
     def __send_multi_pg(self, frame_format, cpg_list, src_address, dst_address):
@@ -354,7 +350,7 @@ class J1939_22:
             self.__send_message(mid.can_id, True, data, fd_format=True)
 
 
-    def async_job_thread(self, now):
+    def loop(self, now):
 
         next_wakeup = now + 5.0 # wakeup in 5 seconds
 
@@ -534,7 +530,6 @@ class J1939_22:
                     'dest_address' : dest_address,
                 }
             self.__send_tp_cts(dest_address, src_address, session_num, self._rcv_buffer[buffer_hash]['num_segments_max_rec'], 1, pgn)
-            self.__job_thread_wakeup()
 
         elif control_byte == self.TpControlType.CTS:
             buffer_hash   = self._buffer_hash(session_num, dest_address, src_address)
@@ -547,7 +542,6 @@ class J1939_22:
                 # SAE J1939/22
                 # receiver requests a pause
                 self._snd_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.Th
-                self.__job_thread_wakeup()
                 return
 
             num_segments_all = self._snd_buffer[buffer_hash]['num_segments']
@@ -567,7 +561,6 @@ class J1939_22:
 
             self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.SENDING_RTS_CTS
             self._snd_buffer[buffer_hash]['deadline'] = time.time() # wake up immediately
-            self.__job_thread_wakeup()
 
         elif control_byte == self.TpControlType.EOM_STATUS:
             buffer_hash = self._buffer_hash(session_num, src_address, dest_address)
@@ -593,7 +586,6 @@ class J1939_22:
             # TODO: should we inform the application about the successful transmission?
             self._snd_buffer[buffer_hash]['state'] = self.SendBufferState.EOM_ACK_RECEIVED
             self._snd_buffer[buffer_hash]['deadline'] = time.time() # wake up immediately
-            self.__job_thread_wakeup()
 
         # BAM FD.TP.CM received
         elif control_byte == self.TpControlType.BAM:
@@ -617,7 +609,6 @@ class J1939_22:
                     'src_address' : src_address,
                     'dest_address' : dest_address,
                 }
-            self.__job_thread_wakeup()
 
         elif control_byte == self.TpControlType.ABORT:
             # if abort received before transmission established -> cancel transmission
@@ -669,7 +660,6 @@ class J1939_22:
             if dest_address != ParameterGroupNumber.Address.GLOBAL:
                 # set deadlin for waiting on eom status
                 self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T1
-            self.__job_thread_wakeup()
             return
 
         # send clear to send
@@ -684,11 +674,9 @@ class J1939_22:
                                                                self._rcv_buffer[buffer_hash]['num_segments'])
 
             self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T2
-            self.__job_thread_wakeup()
             return
 
         self._rcv_buffer[buffer_hash]['deadline'] = time.time() + self.Timeout.T1
-        #self.__job_thread_wakeup()
 
     def _process_multi_pg(self, mid : MessageId, dest_address, data, timestamp):
         # currently "SAE J1939 with no assurance data" trailer format supported only

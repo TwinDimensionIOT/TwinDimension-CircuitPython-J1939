@@ -1,41 +1,32 @@
-SAE J1939 for Python
-====================
+TwinDimension-CircuitPython-TData
+=================================
 
-|release| |docs|
+.. image:: https://img.shields.io/discord/1016500444379496478
+    :target: https://discord.com/channels/1016500444379496478
+    :alt: Discord
 
-.. |release| image:: https://img.shields.io/pypi/v/can-j1939
-   :target: https://pypi.python.org/pypi/can-j1939/
-   :alt: Latest Version on PyPi
+.. image:: https://img.shields.io/badge/LinkedIn-0077B5?logo=linkedin&logoColor=white
+    :target: https://www.linkedin.com/company/twindimension
+    :alt: LinkedIn
 
-.. |docs| image:: https://readthedocs.org/projects/j1939/badge/?version=latest
-   :target: https://j1939.readthedocs.io/en/latest/
-   :alt: Documentation build Status
+.. image:: https://img.shields.io/badge/License-MIT-yellow.svg
+    :target: https://opensource.org/licenses/MIT
+    :alt: License: MIT
 
-
-An implementation of the CAN SAE J1939 standard for Python.
+An implementation of the CAN SAE J1939 standard for CircuiPython.
 This is the first J1939-22 (J1939-FD) implementation!
 
 If you experience a problem or think the stack would not behave properly, do
 not hesitate to open a ticket or write an email.
 Pullrequests are of course even more welcome!
 
-The project uses the python-can_ package to support multiple hardware drivers.
-At the time of writing the supported interfaces are
+ToDo
+--------
+* general cleanup (project divergence)
+* update test cases
+* update docs
+* ...
 
-* CAN over Serial
-* CAN over Serial / SLCAN
-* CANalyst-II
-* IXXAT Virtual CAN Interface
-* Kvasers CANLIB
-* NEOVI Interface
-* NI-CAN
-* PCAN Basic API
-* Socketcan
-* SYSTEC interface
-* USB2CAN Interface
-* Vector
-* Virtual
-* isCAN
 
 Overview
 --------

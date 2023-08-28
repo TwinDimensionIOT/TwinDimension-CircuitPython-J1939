@@ -1,9 +1,9 @@
-import logging
+import adafruit_logging as logging
 import time
-import can
 import j1939
+import board
 
-logging.getLogger('j1939').setLevel(logging.DEBUG)
+logging.getLogger('electronic_control_unit').setLevel(logging.DEBUG)
 logging.getLogger('can').setLevel(logging.DEBUG)
 
 def on_message(priority, pgn, sa, timestamp, data):
@@ -20,7 +20,7 @@ def on_message(priority, pgn, sa, timestamp, data):
     :param bytearray data:
         Data of the PDU
     """
-    print("PGN {} length {}".format(pgn, len(data)))
+    print("PGN {} length {} data {}".format(pgn, len(data), data))
 
 def main():
     print("Initializing")
@@ -29,19 +29,17 @@ def main():
     ecu = j1939.ElectronicControlUnit()
 
     # Connect to the CAN bus
-    # Arguments are passed to python-can's can.interface.Bus() constructor
-    # (see https://python-can.readthedocs.io/en/stable/bus.html).
-    # ecu.connect(bustype='socketcan', channel='can0')
-    # ecu.connect(bustype='kvaser', channel=0, bitrate=250000)
-    ecu.connect(bustype='pcan', channel='PCAN_USBBUS1', bitrate=250000)
-    # ecu.connect(bustype='ixxat', channel=0, bitrate=250000)
-    # ecu.connect(bustype='vector', app_name='CANalyzer', channel=0, bitrate=250000)
-    # ecu.connect(bustype='nican', channel='CAN0', bitrate=250000)    
+    ecu.connect(bus_type='mcp2515', bitrate=250000, cs = board.IO18, sck = board.IO6, mosi = board.IO7, miso = board.IO17)
 
     # subscribe to all (global) messages on the bus
     ecu.subscribe(on_message)
 
-    time.sleep(120)
+    startTime = time.time()
+    now = time.time()
+    while now - startTime < 120:
+        # Explicitly pump the ecu loop.
+        ecu.loop(now)
+        now = time.time()
 
     print("Deinitializing")
     ecu.disconnect()
